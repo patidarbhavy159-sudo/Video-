@@ -1,0 +1,46 @@
+name: Finish video (music + effects + vignette, no re-render)
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Run id whose part1-part4 artifacts to join"
+        default: "43679401069"
+permissions:
+  contents: write
+  actions: read
+jobs:
+  finish:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the audio file is in the repo
+        run: |
+          test -s final_audio.m4a || { echo "ERROR - upload final_audio.m4a to the repo root first"; exit 1; }
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: part*
+          path: parts
+          merge-multiple: true
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Join parts, add audio, vignette and film grain
+        run: |
+          ls -la parts
+          for n in 1 2 3 4; do test -s parts/part$n.mp4 || { echo "ERROR: part$n.mp4 is missing"; exit 1; }; done
+          printf "file 'parts/part%s.mp4'\n" 1 2 3 4 > list.txt
+          ffmpeg -y -f concat -safe 0 -i list.txt -i final_audio.m4a -map 0:v -map 1:a \
+            -vf "eq=saturation=1.06:contrast=1.03,vignette=PI/5,noise=alls=5:allf=t" \
+            -c:v libx264 -crf 17 -preset medium -pix_fmt yuv420p -c:a copy -shortest -movflags +faststart pig-war-final.mp4
+          ls -la pig-war-final.mp4
+      - name: Keep the final video as an artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pig-war-final
+          path: pig-war-final.mp4
+          if-no-files-found: error
+      - name: Publish as a Release
+        run: gh release create "final-${{ github.run_number }}" pig-war-final.mp4 --title "Pig War final" --notes "Joined from run ${{ inputs.run_id }} with music, effects and vignette"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

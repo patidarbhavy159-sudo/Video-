@@ -1,0 +1,74 @@
+name: Render Pig War
+on: workflow_dispatch
+permissions:
+  contents: write
+jobs:
+  render:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [{n: 1, r: "0-246"}, {n: 2, r: "247-492"}, {n: 3, r: "493-738"}, {n: 4, r: "739-984"}]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: 20}
+      - name: Unzip project
+        run: |
+          ls -la
+          test -f pig-war-project.zip || { echo "ERROR: pig-war-project.zip is not in the repo root"; exit 1; }
+          unzip -q pig-war-project.zip
+          ls pig
+      - run: sudo apt-get update && sudo apt-get install -y libnss3 libdbus-1-3 libatk1.0-0 libasound2 libxrandr2 libxkbcommon-dev libxfixes3 libxcomposite1 libxdamage1 libatk-bridge2.0-0 libpango-1.0-0 libcairo2 libcups2 libgbm-dev
+      - run: npm ci && npx remotion browser ensure
+        working-directory: pig
+      - name: Render this part
+        working-directory: pig
+        run: |
+          mkdir -p out
+          nproc; free -m
+          npx remotion render src/index.ts PigWar out/part${{ matrix.part.n }}.mp4 --frames=${{ matrix.part.r }} --muted --codec=h264 --crf=18 --pixel-format=yuv420p --gl=swangle --concurrency=2 --timeout=300000 --log=verbose 2>&1 | tee out/render-part${{ matrix.part.n }}.log
+          test -s out/part${{ matrix.part.n }}.mp4 || { echo "ERROR: render produced no mp4"; ls -la out; exit 1; }
+          ls -la out
+      - name: Upload the part
+        uses: actions/upload-artifact@v4
+        with:
+          name: "part${{ matrix.part.n }}"
+          path: "pig/out/part${{ matrix.part.n }}.mp4"
+          if-no-files-found: error
+      - name: Upload the render log (even if the render failed)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: "log-part${{ matrix.part.n }}"
+          path: "pig/out/render-part${{ matrix.part.n }}.log"
+          if-no-files-found: ignore
+  combine:
+    needs: render
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: unzip -q pig-war-project.zip
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: part*
+          path: parts
+          merge-multiple: true
+      - name: Join the parts and add the voice-over
+        run: |
+          ls -la parts
+          for n in 1 2 3 4; do test -s parts/part$n.mp4 || { echo "ERROR: part$n.mp4 is missing"; exit 1; }; done
+          printf "file 'parts/part%s.mp4'\n" 1 2 3 4 > list.txt
+          ffmpeg -y -f concat -safe 0 -i list.txt -i pig/public/voice.mp3 -map 0:v -map 1:a -c:v copy -c:a aac -b:a 192k -shortest pig-war.mp4
+          ls -la pig-war.mp4
+      - name: Keep the final video as an artifact too
+        uses: actions/upload-artifact@v4
+        with:
+          name: pig-war-final
+          path: pig-war.mp4
+          if-no-files-found: error
+      - name: Publish as a Release
+        run: gh release create "render-${{ github.run_number }}" pig-war.mp4 --title "Pig War render" --notes "Rendered by GitHub Actions"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
